@@ -55,19 +55,36 @@ class Group(list):
             <Connection host='notahost'>: gaierror(...),
         }
 
+    As with `.Connection`, `.Group` objects may be used as context managers,
+    which will automatically `.close` the object on block exit.
+
     .. versionadded:: 2.0
+    .. versionchanged:: 2.4
+        Added context manager behavior.
     """
 
-    def __init__(self, *hosts):
+    def __init__(self, *hosts, **kwargs):
         """
-        Create a group of connections from one or more shorthand strings.
+        Create a group of connections from one or more shorthand host strings.
 
         See `.Connection` for details on the format of these strings - they
         will be used as the first positional argument of `.Connection`
         constructors.
+
+        Any keyword arguments given will be forwarded directly to those
+        `.Connection` constructors as well. For example, to get a serially
+        executing group object that connects to ``admin@host1``,
+        ``admin@host2`` and ``admin@host3``, and forwards your SSH agent too::
+
+            group = SerialGroup(
+                "host1", "host2", "host3", user="admin", forward_agent=True,
+            )
+
+        .. versionchanged:: 2.3
+            Added ``**kwargs`` (was previously only ``*hosts``).
         """
         # TODO: #563, #388 (could be here or higher up in Program area)
-        self.extend(map(Connection, hosts))
+        self.extend([Connection(host, **kwargs) for host in hosts])
 
     @classmethod
     def from_connections(cls, connections):
@@ -118,8 +135,6 @@ class Group(list):
     # would be distinct from Group. (May want to switch Group to use that,
     # though, whatever it ends up being?)
 
-    # TODO: mirror Connection's close()?
-
     def get(self, *args, **kwargs):
         """
         Executes `.Connection.get` on all member `Connections <.Connection>`.
@@ -131,6 +146,21 @@ class Group(list):
         # TODO: probably best to suck it up & match actual get() sig?
         # TODO: actually implement on subclasses
         raise NotImplementedError
+
+    def close(self):
+        """
+        Executes `.Connection.close` on all member `Connections <.Connection>`.
+
+        .. versionadded:: 2.4
+        """
+        for cxn in self:
+            cxn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
 
 
 class SerialGroup(Group):

@@ -18,6 +18,15 @@ class Group_:
             assert g[0].host == "foo"
             assert g[1].host == "bar"
 
+        def takes_splat_kwargs_and_passes_them_to_Connections(self):
+            g = Group("foo", "bar", user="admin", forward_agent=True)
+            assert g[0].host == "foo"
+            assert g[0].user == "admin"
+            assert g[0].forward_agent is True
+            assert g[1].host == "bar"
+            assert g[1].user == "admin"
+            assert g[1].forward_agent is True
+
     class from_connections:
         def inits_from_iterable_of_Connections(self):
             g = Group.from_connections((Connection("foo"), Connection("bar")))
@@ -36,6 +45,22 @@ class Group_:
         @raises(NotImplementedError)
         def not_implemented_in_base_class(self):
             Group().run()
+
+    class close_and_contextmanager_behavior:
+        def close_closes_all_member_connections(self):
+            cxns = [Mock(name=x) for x in ("foo", "bar", "biz")]
+            g = Group.from_connections(cxns)
+            g.close()
+            for c in cxns:
+                c.close.assert_called_once_with()
+
+        def contextmanager_behavior_works_like_Connection(self):
+            cxns = [Mock(name=x) for x in ("foo", "bar", "biz")]
+            g = Group.from_connections(cxns)
+            with g as my_g:
+                assert my_g is g
+            for c in cxns:
+                c.close.assert_called_once_with()
 
 
 def _make_serial_tester(cxns, index, args, kwargs):

@@ -4,7 +4,9 @@ Tests concerned with the ``fab`` tool & how it overrides Invoke defaults.
 
 import os
 import sys
+import re
 
+from invoke import run
 from invoke.util import cd
 from mock import patch
 import pytest  # because WHY would you expose @skip normally? -_-
@@ -14,7 +16,8 @@ from fabric.config import Config
 from fabric.main import program
 from fabric.exceptions import NothingToDo
 
-from _util import expect, Session, support, config_file, trap
+from fabric.testing.base import Session
+from _util import expect, support, config_file, trap
 
 
 # Designate a runtime config file intended for the test environment; it does
@@ -83,9 +86,15 @@ Available tasks:
   expect-mutation-to-fail
   expect-vanilla-Context
   first
+  hosts-are-host-stringlike
+  hosts-are-init-kwargs
+  hosts-are-mixed-values
+  hosts-are-myhost
   mutate
   second
   third
+  two-hosts
+  vanilla-Task-works-ok
 
 """.lstrip(),
                 )
@@ -189,10 +198,51 @@ Third!
 """.lstrip()
                 assert output == expected
 
-    class no_hosts_flag:
+    class hosts_task_arg_parameterizes_tasks:
+        # NOTE: many of these just rely on MockRemote's builtin
+        # "channel.exec_command called with given command string" asserts.
+
+        def single_string_is_single_exec(self, remote):
+            remote.expect(host="myhost", cmd="nope")
+            with cd(support):
+                program.run("fab hosts-are-myhost")
+
+        def multiple_strings_is_multiple_host_args(self, remote):
+            remote.expect_sessions(
+                Session("host1", cmd="nope"), Session("host2", cmd="nope")
+            )
+            with cd(support):
+                program.run("fab two-hosts")
+
+        def host_string_shorthand_works_ok(self, remote):
+            remote.expect(host="host1", port=1234, user="someuser")
+            with cd(support):
+                program.run("fab hosts-are-host-stringlike")
+
+        def may_give_Connection_init_kwarg_dicts(self, remote):
+            remote.expect_sessions(
+                Session("host1", user="admin", cmd="nope"),
+                Session("host2", cmd="nope"),
+            )
+            with cd(support):
+                program.run("fab hosts-are-init-kwargs")
+
+        def may_give_mixed_value_types(self, remote):
+            remote.expect_sessions(
+                Session("host1", user="admin", cmd="nope"),
+                Session("host2", cmd="nope"),
+            )
+            with cd(support):
+                program.run("fab hosts-are-mixed-values")
+
+    class no_hosts_flag_or_task_arg:
         def calls_task_once_with_invoke_context(self):
             with cd(support):
                 program.run("fab expect-vanilla-Context")
+
+        def vanilla_Invoke_task_works_too(self):
+            with cd(support):
+                program.run("fab vanilla-Task-works-ok")
 
         @raises(NothingToDo)
         def generates_exception_if_combined_with_remainder(self):
@@ -278,3 +328,17 @@ Third!
             output = sys.stdout.getvalue()
             for name in ("build", "deploy", "expect-from-env"):
                 assert name in output
+
+
+class main:
+    "__main__"
+
+    def python_dash_m_acts_like_fab(self, capsys):
+        # Rehash of version output test, but using 'python -m fabric'
+        expected_output = r"""
+Fabric .+
+Paramiko .+
+Invoke .+
+""".strip()
+        output = run("python -m fabric --version", hide=True, in_stream=False)
+        assert re.match(expected_output, output.stdout)

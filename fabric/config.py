@@ -24,6 +24,8 @@ class Config(InvokeConfig):
     - it extends the API to account for loading ``ssh_config`` files (which are
       stored as additional attributes and have no direct relation to the
       regular config data/hierarchy.)
+    - it adds a new optional constructor, `from_v1`, which :ref:`generates
+      configuration data from Fabric 1 <from-v1>`.
 
     Intended for use with `.Connection`, as using vanilla
     `invoke.config.Config` objects would require users to manually define
@@ -35,6 +37,69 @@ class Config(InvokeConfig):
     """
 
     prefix = "fabric"
+
+    @classmethod
+    def from_v1(cls, env, **kwargs):
+        """
+        Alternate constructor which uses Fabric 1's ``env`` dict for settings.
+
+        All keyword arguments besides ``env`` are passed unmolested into the
+        primary constructor, with the exception of ``overrides``, which is used
+        internally & will end up resembling the data from ``env`` with the
+        user-supplied overrides on top.
+
+        .. warning::
+            Because your own config overrides will win over data from ``env``,
+            make sure you only set values you *intend* to change from your v1
+            environment!
+
+        For details on exactly which ``env`` vars are imported and what they
+        become in the new API, please see :ref:`v1-env-var-imports`.
+
+        :param env:
+            An explicit Fabric 1 ``env`` dict (technically, any
+            ``fabric.utils._AttributeDict`` instance should work) to pull
+            configuration from.
+
+        .. versionadded:: 2.4
+        """
+        # TODO: automagic import, if we can find a way to test that
+        # Use overrides level (and preserve whatever the user may have given)
+        # TODO: we really do want arbitrary number of config levels, don't we?
+        # TODO: most of these need more care re: only filling in when they
+        # differ from the v1 default. As-is these won't overwrite runtime
+        # overrides (due to .setdefault) but they may still be filling in empty
+        # values to stomp on lower level config levels...
+        data = kwargs.pop("overrides", {})
+        # TODO: just use a dataproxy or defaultdict??
+        for subdict in ("connect_kwargs", "run", "sudo", "timeouts"):
+            data.setdefault(subdict, {})
+        # PTY use
+        data["run"].setdefault("pty", env.always_use_pty)
+        # Gateway
+        data.setdefault("gateway", env.gateway)
+        # Agent forwarding
+        data.setdefault("forward_agent", env.forward_agent)
+        # Key filename(s)
+        if env.key_filename is not None:
+            data["connect_kwargs"].setdefault("key_filename", env.key_filename)
+        # Load keys from agent?
+        data["connect_kwargs"].setdefault("allow_agent", not env.no_agent)
+        data.setdefault("ssh_config_path", env.ssh_config_path)
+        # Sudo password
+        data["sudo"].setdefault("password", env.sudo_password)
+        # Vanilla password (may be used for regular and/or sudo, depending)
+        passwd = env.password
+        data["connect_kwargs"].setdefault("password", passwd)
+        if not data["sudo"]["password"]:
+            data["sudo"]["password"] = passwd
+        data["sudo"].setdefault("prompt", env.sudo_prompt)
+        data["timeouts"].setdefault("connect", env.timeout)
+        data.setdefault("load_ssh_configs", env.use_ssh_config)
+        data["run"].setdefault("warn", env.warn_only)
+        # Put overrides back for real constructor and go
+        kwargs["overrides"] = data
+        return cls(**kwargs)
 
     def __init__(self, *args, **kwargs):
         """
@@ -60,11 +125,12 @@ class Config(InvokeConfig):
             ``~/.ssh/config``.
 
         :param bool lazy:
-            Has the same meaning as the parent class' ``lazy``, but additionall
-            controls whether SSH config file loading is deferred (requires
-            manually calling `load_ssh_config` sometime.) For example, one may
-            need to wait for user input before calling `set_runtime_ssh_path`,
-            which will inform exactly what `load_ssh_config` does.
+            Has the same meaning as the parent class' ``lazy``, but
+            additionally controls whether SSH config file loading is deferred
+            (requires manually calling `load_ssh_config` sometime.) For
+            example, one may need to wait for user input before calling
+            `set_runtime_ssh_path`, which will inform exactly what
+            `load_ssh_config` does.
         """
         # Tease out our own kwargs.
         # TODO: consider moving more stuff out of __init__ and into methods so
@@ -238,6 +304,8 @@ class Config(InvokeConfig):
             "connect_kwargs": {},
             "forward_agent": False,
             "gateway": None,
+            # TODO 3.0: change to True and update all docs accordingly.
+            "inline_ssh_env": False,
             "load_ssh_configs": True,
             "port": 22,
             "run": {"replace_env": True},

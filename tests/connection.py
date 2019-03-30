@@ -15,14 +15,16 @@ from paramiko import SSHConfig
 import pytest  # for mark
 from pytest import skip, param
 from pytest_relaxed import raises
+from invoke.vendor.lexicon import Lexicon
 
 from invoke.config import Config as InvokeConfig
 from invoke.exceptions import ThreadException
 
 from fabric import Config as Config_
+from fabric.exceptions import InvalidV1Env
 from fabric.util import get_local_user
 
-from _util import support, Connection, Config
+from _util import support, Connection, Config, faux_v1_env
 
 
 # Remote is woven in as a config default, so must be patched there
@@ -500,6 +502,90 @@ class Connection_:
                 )
                 assert cxn.connect_kwargs == {"origin": "kwarg"}
 
+        class inline_ssh_env:
+            def defaults_to_config_value(self):
+                assert Connection("host").inline_ssh_env is False
+                config = Config({"inline_ssh_env": True})
+                assert Connection("host", config=config).inline_ssh_env is True
+
+            def may_be_given(self):
+                assert Connection("host").inline_ssh_env is False
+                cxn = Connection("host", inline_ssh_env=True)
+                assert cxn.inline_ssh_env is True
+
+    class from_v1:
+        def setup(self):
+            self.env = faux_v1_env()
+
+        def _cxn(self, **kwargs):
+            self.env.update(kwargs)
+            return Connection.from_v1(self.env)
+
+        def must_be_given_explicit_env_arg(self):
+            cxn = Connection.from_v1(self.env)
+            assert cxn.host == "localghost"
+
+        class obtaining_config:
+            @patch("fabric.connection.Config.from_v1")
+            def defaults_to_calling_Config_from_v1(self, Config_from_v1):
+                Connection.from_v1(self.env)
+                Config_from_v1.assert_called_once_with(self.env)
+
+            @patch("fabric.connection.Config.from_v1")
+            def may_be_given_config_explicitly(self, Config_from_v1):
+                # Arguably a dupe of regular Connection constructor behavior,
+                # but whatever.
+                Connection.from_v1(env=self.env, config=Config())
+                assert not Config_from_v1.called
+
+        class additional_kwargs:
+            # I.e. as opposed to what happens to the 'env' kwarg...
+            def forwards_arbitrary_kwargs_to_init(self):
+                cxn = Connection.from_v1(
+                    self.env,
+                    connect_kwargs={"foo": "bar"},
+                    inline_ssh_env=True,
+                    connect_timeout=15,
+                )
+                assert cxn.connect_kwargs["foo"] == "bar"
+                assert cxn.inline_ssh_env is True
+                assert cxn.connect_timeout == 15
+
+            def conflicting_kwargs_win_over_v1_env_values(self):
+                env = Lexicon(self.env)
+                cxn = Connection.from_v1(
+                    env, host="not-localghost", port=2222, user="remoteuser"
+                )
+                assert cxn.host == "not-localghost"
+                assert cxn.user == "remoteuser"
+                assert cxn.port == 2222
+
+        class var_mappings:
+            def host_string(self):
+                cxn = self._cxn()  # default is 'localghost'
+                assert cxn.host == "localghost"
+
+            @raises(InvalidV1Env)
+            def None_host_string_errors_usefully(self):
+                self._cxn(host_string=None)
+
+            def user(self):
+                cxn = self._cxn(user="space")
+                assert cxn.user == "space"
+
+            class port:
+                def basic(self):
+                    cxn = self._cxn(port=2222)
+                    assert cxn.port == 2222
+
+                def casted_to_int(self):
+                    cxn = self._cxn(port="2222")
+                    assert cxn.port == 2222
+
+                def not_supplied_if_given_in_host_string(self):
+                    cxn = self._cxn(host_string="localghost:3737", port=2222)
+                    assert cxn.port == 3737
+
     class string_representation:
         "string representations"
 
@@ -853,6 +939,13 @@ class Connection_:
             assert c.open.called
 
         @patch(remote_path)
+        def passes_inline_env_to_Remote(self, Remote, client):
+            Connection("host").run("command")
+            assert Remote.call_args[1]["inline_env"] is False
+            Connection("host", inline_ssh_env=True).run("command")
+            assert Remote.call_args[1]["inline_env"] is True
+
+        @patch(remote_path)
         def calls_Remote_run_with_command_and_kwargs_and_returns_its_result(
             self, Remote, client
         ):
@@ -866,7 +959,7 @@ class Connection_:
             # .assert_called_with()) stopped working, apparently triggered by
             # our code...somehow...after commit (roughly) 80906c7.
             # And yet, .call_args_list and its brethren work fine. Wha?
-            Remote.assert_any_call(c)
+            Remote.assert_any_call(c, inline_env=False)
             remote.run.assert_has_calls(
                 [call("command"), call("command", warn=True, hide="stderr")]
             )
@@ -891,6 +984,13 @@ class Connection_:
             assert c.open.called
 
         @patch(remote_path)
+        def passes_inline_env_to_Remote(self, Remote, client):
+            Connection("host").sudo("command")
+            assert Remote.call_args[1]["inline_env"] is False
+            Connection("host", inline_ssh_env=True).sudo("command")
+            assert Remote.call_args[1]["inline_env"] is True
+
+        @patch(remote_path)
         def basic_invocation(self, Remote, client):
             # Technically duplicates Invoke-level tests, but ensures things
             # still work correctly at our level.
@@ -901,7 +1001,10 @@ class Connection_:
             # None despite call_args_list being populated. WTF. (Also,
             # Remote.return_value is two different Mocks now, despite Remote's
             # own Mock having the same ID here and in code under test. WTF!!)
-            expected = [call(cxn), call().run(cmd, watchers=ANY)]
+            expected = [
+                call(cxn, inline_env=False),
+                call().run(cmd, watchers=ANY),
+            ]
             assert Remote.mock_calls == expected
             # NOTE: we used to have a "sudo return value is literally the same
             # return value from Remote.run()" sanity check here, which is

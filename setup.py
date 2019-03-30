@@ -55,6 +55,9 @@ To find out what's new in this version of Fabric, please see `the changelog
     open("README.rst").read()
 )
 
+testing_deps = ["mock>=2.0.0,<3.0"]
+pytest_deps = ["pytest>=3.2.5,<4.0"]
+
 setuptools.setup(
     name=package_name,
     version=version,
@@ -65,10 +68,14 @@ setuptools.setup(
     author_email="jeff@bitprophet.org",
     url="http://fabfile.org",
     install_requires=[
-        "invoke>=1.0,<2.0",
+        "invoke>=1.1,<2.0",
         "paramiko>=2.4",
         "cryptography>=1.1",
     ],
+    extras_require={
+        "testing": testing_deps,
+        "pytest": testing_deps + pytest_deps,
+    },
     packages=packages,
     entry_points={
         "console_scripts": [

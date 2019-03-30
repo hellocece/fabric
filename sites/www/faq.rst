@@ -11,6 +11,29 @@ your question is not answered here.
     Most API examples and links are for version 2 and up; FAQs specific to
     version 1 will typically be marked as such.
 
+.. warning::
+    Many questions about shell command execution and task behavior are answered
+    on `Invoke's FAQ page <http://www.pyinvoke.org/faq.html>`_ - please check
+    there also!
+
+
+.. _remote-env-vars-dont-work:
+
+Environment variables are not being set correctly on the remote end!
+====================================================================
+
+If your attempts to set environment variables for things like `Connection.run
+<fabric.connection.Connection.run>` appear to silently fail, you're almost
+certainly talking to an SSH server which is setting a highly restrictive
+`AcceptEnv <https://man.openbsd.org/sshd_config#AcceptEnv>`_.
+
+To fix, you can either modify the server's configuration to allow the env vars
+you're setting, or use the ``inline_ssh_env`` `~fabric.connection.Connection`
+parameter (or the :ref:`global config option <default-values>` of the same
+name) to force Fabric to send env vars prefixed before your command strings
+instead.
+
+
 .. _one-shell-per-command:
 
 My (``cd``/``workon``/``export``/etc) calls don't seem to work!

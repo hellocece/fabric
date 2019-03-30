@@ -119,6 +119,122 @@ resident in your Python environment simultaneously.
 For details on how to obtain the ``fabric2`` version of the package, see
 :ref:`installing-as-fabric2`.
 
+.. _from-v1:
+
+Creating ``Connection`` and/or ``Config`` objects from v1 settings
+------------------------------------------------------------------
+
+A common tactic when upgrading piecemeal is to generate modern Fabric objects
+whose contents match the current Fabric 1 environment. Whereas Fabric 1 stores
+*all* configuration (including the "current host") in a single place -- the
+``env`` object -- modern Fabric breaks things up into multiple (albeit
+composed) objects: `~fabric.connection.Connection` for per-connection
+parameters, and `~fabric.config.Config` for general settings and defaults.
+
+In most cases, you'll only need to generate a `~fabric.connection.Connection`
+object using the alternate class constructor `Connection.from_v1
+<fabric.connection.Connection.from_v1>`, which should be fed your appropriate
+local ``fabric.api.env`` object; see its API docs for details.
+
+A contrived example::
+
+    from fabric.api import env, run
+    from fabric2 import Connection
+
+    env.host_string = "admin@myserver"
+    run("whoami") # v1
+    cxn = Connection.from_v1(env)
+    cxn.run("whoami") # v2+
+
+By default, this constructor calls another API member -- `Config.from_v1
+<fabric.config.Config.from_v1>` -- internally on your behalf. Users who need
+tighter control over modern-style config options may opt to call that
+classmethod explicitly and hand their modified result into `Connection.from_v1
+<fabric.connection.Connection.from_v1>`, which will cause the latter to skip
+any implicit config creation.
+
+.. _v1-env-var-imports:
+
+Mapping of v1 ``env`` vars to modern API members
+------------------------------------------------
+
+The ``env`` vars and how they map to `~fabric.connection.Connection` arguments
+or `~fabric.config.Config` values (when fed into the ``.from_v1`` constructors
+described above) are listed below.
+
+.. list-table::
+    :header-rows: 1
+
+    * - v1 ``env`` var
+      - v2+ usage (prefixed with the class it ends up in)
+
+    * - ``always_use_pty``
+      - Config: ``run.pty``.
+    * - ``forward_agent``
+      - Config: ``connect_kwargs.forward_agent``.
+    * - ``gateway``
+      - Config: ``gateway``.
+    * - ``host_string``
+      - Connection: ``host`` kwarg (which can handle host-string like values,
+        including user/port).
+    * - ``key``
+      - **Not supported**: Fabric 1 performed extra processing on this
+        (trying a bunch of key classes to instantiate) before
+        handing it into Paramiko; modern Fabric prefers to just let you handle
+        Paramiko-level parameters directly.
+
+        If you're filling your Fabric 1 ``key`` data from a file, we recommend
+        switching to ``key_filename`` instead, which is supported.
+
+        If you're loading key data from some other source as a string, you
+        should know what type of key your data is and manually instantiate it
+        instead, then supply it to the ``connect_kwargs`` parameter. For
+        example::
+
+            from io import StringIO  # or 'from StringIO' on Python 2
+            from fabric.state import env
+            from fabric2 import Connection
+            from paramiko import RSAKey
+            from somewhere import load_my_key_string
+
+            pkey = RSAKey.from_private_key(StringIO(load_my_key_string()))
+            cxn = Connection.from_v1(env, connect_kwargs={"pkey": pkey})
+
+    * - ``key_filename``
+      - Config: ``connect_kwargs.key_filename``.
+    * - ``no_agent``
+      - Config: ``connect_kwargs.allow_agent`` (inverted).
+    * - ``password``
+      - Config: ``connect_kwargs.password``, as well as ``sudo.password``
+        **if and only if** the env's ``sudo_password`` (see below) is unset.
+        (This mimics how v1 uses this particular setting - in earlier versions
+        there was no ``sudo_password`` at all.)
+    * - ``port``
+      - Connection: ``port`` kwarg. Is casted to an integer due to Fabric 1's
+        default being a string value (which is not valid in v2).
+
+        .. note::
+            Since v1's ``port`` is used both for a default *and* to store the
+            current connection state, v2 uses it to fill in the Connection
+            only, and not the Config, on assumption that it will typically be
+            the current connection state.
+
+    * - ``ssh_config_path``
+      - Config: ``ssh_config_path``.
+    * - ``sudo_password``
+      - Config: ``sudo.password``.
+    * - ``sudo_prompt``
+      - Config: ``sudo.prompt``.
+    * - ``timeout``
+      - Config: ``timeouts.connection`` (because v1's ambiguously named
+        ``timeout`` setting was, in fact, for connection timeouts).
+    * - ``use_ssh_config``
+      - Config: ``load_ssh_configs``.
+    * - ``user``
+      - Connection: ``user`` kwarg.
+    * - ``warn_only``
+      - Config: ``run.warn``
+
 
 .. _upgrade-specifics:
 
@@ -209,6 +325,10 @@ High level code flow and API member concerns.
         `fabric.connection.Connection` objects and call their methods. These
         objects encapsulate all connection state (user, host, gateway, etc) and
         have their own SSH client instances.
+
+        .. seealso::
+            `Connection.from_v1 <fabric.connection.Connection.from_v1>`
+
     * - Emphasis on serialized "host strings" as method of setting user, host,
         port, etc
       - Ported/Removed
@@ -257,10 +377,11 @@ Task functions & decorators
     * - "New" style ``@task``-decorated, module-level task functions
       - Ported
       - Largely the same, though now with superpowers - `@task
-        <invoke.tasks.task>` can still be used without any parentheses, but
-        where v1 only had a single ``task_class`` argument, Invoke has a number
-        of various namespace and parser hints as well as execution related
-        options.
+        <fabric.tasks.task>` can still be used without any parentheses, but
+        where v1 only had a single ``task_class`` argument, the new version
+        (largely based on Invoke's) has a number of namespace and parser hints,
+        as well as execution related options (such as those formerly served by
+        ``@hosts`` and friends).
     * - Arbitrary task function arguments (i.e. ``def mytask(any, thing, at,
         all)``)
       - Ported
@@ -291,12 +412,18 @@ Task functions & decorators
         We may reinstate (in an opt-in fashion) imported module scanning later,
         since the use of explicit namespace objects still allows users control
         over the tree that results.
-    * - ``@hosts`` and ``@roles`` for determining the default list of host or
-        group-of-host targets a given task uses
-      - `Pending <https://github.com/fabric/fabric/issues/1594>`__
-      - These decorators were very much in the "DSL" vein of Fabric 1 and have
-        not been prioritized for the rewrite, though they are likely to return
-        in some form, and probably sooner instead of later.
+    * - ``@hosts`` for determining the default host or list of hosts a given
+        task uses
+      - Ported
+      - Reinstated as the ``hosts`` parameter of `@task <fabric.tasks.task>`.
+        Further, it can now handle dicts of `fabric.connection.Connection`
+        kwargs in addition to simple host strings.
+    * - ``@roles`` for determining the default list of group-of-host targets a
+        given task uses
+      - Pending
+      - See :ref:`upgrading-api` for details on the overall 'roles' concept.
+        When it returns, this will probably follow ``@hosts`` and become some
+        ``@task`` argument.
     * - ``@serial``/``@parallel``/``@runs_once``
       - Ported/`Pending <https://github.com/pyinvoke/invoke/issues/63>`__
       - Parallel execution is currently offered at the API level via
@@ -683,7 +810,7 @@ differences.
     :widths: 40 10 50
 
     * - ``shell`` / ``env.use_shell`` designating whether or not to wrap
-        commands within an explicit call to e.g. ``/bin/sh -c 'real command'``;
+        commands within an explicit call to e.g. ``/bin/sh -c "real command"``;
         plus their attendant options like ``shell_escape``
       - Removed
       - Non-``sudo`` remote execution never truly required an explicit shell
@@ -708,7 +835,7 @@ below are ``sudo`` specific.
     :widths: 40 10 50
 
     * - ``shell`` / ``env.use_shell`` designating whether or not to wrap
-        commands within an explicit call to e.g. ``/bin/sh -c 'real command'``
+        commands within an explicit call to e.g. ``/bin/sh -c "real command"``
       - `Pending <https://github.com/pyinvoke/invoke/issues/344>`__/Removed
       - See the note above under ``run`` for details on shell wrapping
         as a general strategy; unfortunately for ``sudo``, some sort of manual
@@ -949,7 +1076,7 @@ functions from v1.
         though their positional-argument essence (``get(remote, local)`` and
         ``put(local, remote)`` remains the same.
     * - Omit the 'destination' argument for implicit 'relative to local
-        context' behavior (e.g. ``put('local.txt')`` implicitly uploading to
+        context' behavior (e.g. ``put("local.txt")`` implicitly uploading to
         remote ``$HOME/local.txt``.)
       - Ported
       - You should probably still be explicit, because this is Python.
@@ -980,6 +1107,14 @@ functions from v1.
         became clear that its maintenance burden far outweighed the fact that
         it was poorly reinventing ``rsync`` and/or the use of archival file
         tools like ye olde ``tar``+``gzip``.
+
+        For one potential workaround, see the ``rsync`` function in `patchwork
+        <https://github.com/fabric/patchwork>`_.
+    * - Remote file path tilde expansion
+      - Removed
+      - This behavior is ultimately unnecessary (one can simply leave the
+        tilde off for the same result) and had a few pernicious bugs of its
+        own, so it's gone.
 
 
 .. _upgrading-configuration:
@@ -1257,12 +1392,12 @@ for upgrading::
     from fabric.api import abort, env, local, run, settings, task
     from fabric.contrib.console import confirm
 
-    env.hosts = ['my-server']
+    env.hosts = ["my-server"]
 
     @task
     def test():
         with settings(warn_only=True):
-            result = local('./manage.py test my_app', capture=True)
+            result = local("./manage.py test my_app", capture=True)
         if result.failed and not confirm("Tests failed. Continue anyway?"):
             abort("Aborting at user request.")
 
@@ -1282,7 +1417,7 @@ for upgrading::
 
     @task
     def deploy():
-        code_dir = '/srv/django/myproject'
+        code_dir = "/srv/django/myproject"
         with settings(warn_only=True):
             if run("test -d {}".format(code_dir)).failed:
                 cmd = "git clone user@vcshost:/path/to/repo/.git {}"
@@ -1312,24 +1447,31 @@ following:
 
 ::
 
-    from invoke import task, Exit
+    from fabric import task
+    from invoke import Exit
     from invocations.console import confirm
 
 Host list
 ---------
 
-The idea of a predefined global host list is gone; there is currently no direct
-replacement. Instead, we expect users to set up their own execution context,
+The idea of a predefined *global* host list is gone; there is currently no
+direct replacement. In general, users can set up their own execution context,
 creating explicit `fabric.connection.Connection` and/or `fabric.group.Group`
-objects as needed, even if that's simply by mocking v1's built-in "roles" map.
-For simple use cases, the :option:`--hosts` core option is still available.
+objects as needed; core Fabric is in the process of building convenience
+helpers on top of this, but "create your own Connections" will always be there
+as a backstop.
+
+Speaking of convenience helpers: most of the functionality of ``fab --hosts``
+and ``@hosts`` has been ported over -- the former directly (see
+:option:`--hosts`), the latter as a `@task <fabric.tasks.task>` keyword
+argument. Thus, for now our example will be turning the global ``env.hosts``
+into a lightweight module-level variable declaration, intended for use in the
+subsequent calls to ``@task``::
+
+    my_hosts = ["my-server"]
 
 .. note::
     This is an area under active development, so feedback is welcomed.
-
-For now, given the source snippet hardcoded a hostname of ``my-server``, we'll
-assume this fabfile will be invoked as e.g. ``fab -H my-server taskname``, and
-there will be no hardcoding within the fabfile itself.
 
 .. TODO:
     - pre-task example
@@ -1341,9 +1483,12 @@ Test task
 The first task in the fabfile uses a good spread of the API. We'll outline the
 changes here (though again, all details are in :ref:`upgrade-specifics`):
 
-- Declaring a function as a task is nearly the same as before, but with an
-  explicit initial context argument, whose value will be a
-  `fabric.connection.Connection` object at runtime.
+- Declaring a function as a task is nearly the same as before: use a ``@task``
+  decorator (which, in modern Fabric, can take more optional keyword arguments
+  than its predecessor, including some which replace some of v1's decorators).
+- ``@task``-wrapped functions must now take an explicit initial context
+  argument, whose value will be a `fabric.connection.Connection` object at
+  runtime.
 - The use of ``with settings(warn_only=True)`` can be replaced by a simple
   kwarg to the ``local`` call.
 - That ``local`` call is now a method call on the
@@ -1351,7 +1496,7 @@ changes here (though again, all details are in :ref:`upgrade-specifics`):
 - ``capture`` is no longer a useful argument; we can now capture and display at
   the same time, locally or remotely. If you don't actually *want* a local
   subprocess to mirror its stdout/err while it runs, you can simply say
-  ``hide=True`` (or ``hide='stdout'`` or etc.)
+  ``hide=True`` (or ``hide="stdout"`` or etc.)
 - Result objects are pretty similar between versions; modern Fabric's results
   no longer pretend to "be" strings, but instead act more like booleans, acting
   truthy if the command exited cleanly, and falsey otherwise. In terms of
@@ -1365,7 +1510,7 @@ The result::
 
     @task
     def test(c):
-        result = c.local('./manage.py test my_app', warn=True)
+        result = c.local("./manage.py test my_app", warn=True)
         if not result and not confirm("Tests failed. Continue anyway?"):
             raise Exit("Aborting at user request.")
 
@@ -1409,12 +1554,15 @@ host the `fabric.connection.Connection` has been bound to).
 
 ``with cd`` is not fully implemented for the remote side of things, but we
 expect it will be soon. For now we fall back to command chaining with ``&&``.
+And, notably, now that we care about selecting host targets, we refer to our
+earlier definition of a default host list -- ``my_hosts`` -- when declaring the
+default host list for this task.
 
 ::
 
-    @task
+    @task(hosts=my_hosts)
     def deploy(c):
-        code_dir = '/srv/django/myproject'
+        code_dir = "/srv/django/myproject"
         if not c.run("test -d {}".format(code_dir), warn=True):
             cmd = "git clone user@vcshost:/path/to/repo/.git {}"
             c.run(cmd.format(code_dir))
@@ -1426,12 +1574,16 @@ The whole thing
 
 Now we have the entire, upgraded fabfile that will work with modern Fabric::
 
-    from invoke import task, Exit
+    from invoke import Exit
     from invocations.console import confirm
+
+    from fabric import task
+
+    my_hosts = ["my-server"]
 
     @task
     def test(c):
-        result = c.local('./manage.py test my_app', warn=True)
+        result = c.local("./manage.py test my_app", warn=True)
         if not result and not confirm("Tests failed. Continue anyway?"):
             raise Exit("Aborting at user request.")
 
@@ -1449,9 +1601,9 @@ Now we have the entire, upgraded fabfile that will work with modern Fabric::
         commit(c)
         push(c)
 
-    @task
+    @task(hosts=my_hosts)
     def deploy(c):
-        code_dir = '/srv/django/myproject'
+        code_dir = "/srv/django/myproject"
         if not c.run("test -d {}".format(code_dir), warn=True):
             cmd = "git clone user@vcshost:/path/to/repo/.git {}"
             c.run(cmd.format(code_dir))

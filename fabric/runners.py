@@ -15,18 +15,46 @@ class Remote(Runner):
     .. versionadded:: 2.0
     """
 
+    def __init__(self, *args, **kwargs):
+        """
+        Thin wrapper for superclass' ``__init__``; please see it for details.
+
+        Additional keyword arguments defined here are listed below.
+
+        :param bool inline_env:
+            Whether to 'inline' shell env vars as prefixed parameters, instead
+            of trying to submit them via `.Channel.update_environment`.
+            Default:: ``False``.
+
+        .. versionchanged:: 2.3
+            Added the ``inline_env`` parameter.
+        """
+        self.inline_env = kwargs.pop("inline_env", None)
+        super(Remote, self).__init__(*args, **kwargs)
+
     def start(self, command, shell, env):
         self.channel = self.context.create_session()
         if self.using_pty:
             rows, cols = pty_size()
             self.channel.get_pty(width=rows, height=cols)
-        # TODO: consider adding an option to conditionally turn this
-        # update_environment call into a command-string prefixing behavior
-        # instead (e.g. when one isn't able/willing to update remote server's
-        # AcceptEnv setting). OR: rely on higher-level generic command
-        # prefixing functionality, when implemented.
-        # TODO: honor SendEnv from ssh_config
-        self.channel.update_environment(env)
+        if env:
+            # TODO: honor SendEnv from ssh_config (but if we do, _should_ we
+            # honor it even when prefixing? That would depart from OpenSSH
+            # somewhat (albeit as a "what we can do that it cannot" feature...)
+            if self.inline_env:
+                # TODO: escaping, if we can find a FOOLPROOF THIRD PARTY METHOD
+                # for doing so!
+                # TODO: switch to using a higher-level generic command
+                # prefixing functionality, when implemented.
+                parameters = " ".join(
+                    ["{}={}".format(k, v) for k, v in sorted(env.items())]
+                )
+                # NOTE: we can assume 'export' and '&&' relatively safely, as
+                # sshd always brings some shell into play, even if it's just
+                # /bin/sh.
+                command = "export {} && {}".format(parameters, command)
+            else:
+                self.channel.update_environment(env)
         # TODO: pass in timeout= here when invoke grows timeout functionality
         # in Runner/Local.
         self.channel.exec_command(command)

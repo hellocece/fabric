@@ -13,16 +13,19 @@ strongly encouraged to upgrade to 2.x when possible.
 Basic installation
 ==================
 
-Fabric is best installed via `pip <http://pip-installer.org>`_::
+Fabric is best installed via `pip <http://pip-installer.org>`_; to ensure you
+get Fabric 1 instead of the new but incompatible Fabric 2, specify ``<2.0``::
 
-    $ pip install fabric
+    $ pip install 'fabric<2.0'
 
-All advanced ``pip`` use cases work too, such as::
+All advanced ``pip`` use cases work too, such as installing the latest copy of
+the ``v1`` development branch::
 
-    $ pip install -e git+https://github.com/fabric/fabric
+    $ pip install -e 'git+https://github.com/fabric/fabric@v1#egg=fabric'
 
 Or cloning the Git repository and running::
 
+    $ git checkout v1
     $ pip install -e .
 
 within it.
@@ -32,6 +35,8 @@ are typically older and harder to support), typically called ``fabric`` or
 ``python-fabric``. E.g.::
 
     $ sudo apt-get install fabric
+
+.. note:: Make sure to confirm which major version is currently packaged!
 
 
 Dependencies
@@ -86,27 +91,3 @@ details.
     
     Python 2.5 is unaffected, as it requires the PyPI version of
     ``multiprocessing``, which is newer than that shipped with Python <2.6.3.
-
-
-.. _pypm-1.x:
-
-ActivePython and PyPM
-=====================
-
-Windows users who already have ActiveState's `ActivePython
-<http://www.activestate.com/activepython/downloads>`_ distribution installed
-may find Fabric is best installed with `its package manager, PyPM
-<http://code.activestate.com/pypm/>`_. Below is example output from an
-installation of Fabric via ``pypm``::
-
-    C:\> pypm install fabric
-    The following packages will be installed into "%APPDATA%\Python" (2.7):
-     paramiko-1.7.8 pycrypto-2.4 fabric-1.3.0
-    Get: [pypm-free.activestate.com] fabric 1.3.0
-    Get: [pypm-free.activestate.com] paramiko 1.7.8
-    Get: [pypm-free.activestate.com] pycrypto 2.4
-    Installing paramiko-1.7.8
-    Installing pycrypto-2.4
-    Installing fabric-1.3.0
-    Fixing script %APPDATA%\Python\Scripts\fab-script.py
-    C:\>

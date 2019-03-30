@@ -2,13 +2,14 @@ import errno
 from os.path import join, expanduser
 
 from paramiko.config import SSHConfig
+from invoke.vendor.lexicon import Lexicon
 
 from fabric import Config
 from fabric.util import get_local_user
 
 from mock import patch, call
 
-from _util import support
+from _util import support, faux_v1_env
 
 
 class Config_:
@@ -45,6 +46,7 @@ class Config_:
         assert c.connect_kwargs == {}
         assert c.timeouts.connect is None
         assert c.ssh_config_path is None
+        assert c.inline_ssh_env is False
 
     def overrides_some_Invoke_defaults(self):
         config = Config()
@@ -56,6 +58,124 @@ class Config_:
         # NOTE: see also the integration-esque tests in tests/main.py; this
         # just tests the underlying data/attribute driving the behavior.
         assert Config().prefix == "fabric"
+
+    class from_v1:
+        def setup(self):
+            self.env = faux_v1_env()
+
+        def _conf(self, **kwargs):
+            self.env.update(kwargs)
+            return Config.from_v1(self.env)
+
+        def must_be_given_explicit_env_arg(self):
+            config = Config.from_v1(
+                env=Lexicon(self.env, sudo_password="sikrit")
+            )
+            assert config.sudo.password == "sikrit"
+
+        class additional_kwargs:
+            def forwards_arbitrary_kwargs_to_init(self):
+                config = Config.from_v1(
+                    self.env,
+                    # Vanilla Invoke
+                    overrides={"some": "value"},
+                    # Fabric
+                    system_ssh_path="/what/ever",
+                )
+                assert config.some == "value"
+                assert config._system_ssh_path == "/what/ever"
+
+            def subservient_to_runtime_overrides(self):
+                env = self.env
+                env.sudo_password = "from-v1"
+                config = Config.from_v1(
+                    env, overrides={"sudo": {"password": "runtime"}}
+                )
+                assert config.sudo.password == "runtime"
+
+            def connect_kwargs_also_merged_with_imported_values(self):
+                self.env["key_filename"] = "whatever"
+                conf = Config.from_v1(
+                    self.env, overrides={"connect_kwargs": {"meh": "effort"}}
+                )
+                assert conf.connect_kwargs["key_filename"] == "whatever"
+                assert conf.connect_kwargs["meh"] == "effort"
+
+        class var_mappings:
+            def always_use_pty(self):
+                # Testing both due to v1-didn't-use-None-default issues
+                config = self._conf(always_use_pty=True)
+                assert config.run.pty is True
+                config = self._conf(always_use_pty=False)
+                assert config.run.pty is False
+
+            def forward_agent(self):
+                config = self._conf(forward_agent=True)
+                assert config.forward_agent is True
+
+            def gateway(self):
+                config = self._conf(gateway="bastion.host")
+                assert config.gateway == "bastion.host"
+
+            class key_filename:
+                def base(self):
+                    config = self._conf(key_filename="/some/path")
+                    assert (
+                        config.connect_kwargs["key_filename"] == "/some/path"
+                    )
+
+                def is_not_set_if_None(self):
+                    config = self._conf(key_filename=None)
+                    assert "key_filename" not in config.connect_kwargs
+
+            def no_agent(self):
+                config = self._conf()
+                assert config.connect_kwargs.allow_agent is True
+                config = self._conf(no_agent=True)
+                assert config.connect_kwargs.allow_agent is False
+
+            class password:
+                def set_just_to_connect_kwargs_if_sudo_password_set(self):
+                    # NOTE: default faux env has sudo_password set already...
+                    config = self._conf(password="screaming-firehawks")
+                    passwd = config.connect_kwargs.password
+                    assert passwd == "screaming-firehawks"
+
+                def set_to_both_password_fields_if_necessary(self):
+                    config = self._conf(password="sikrit", sudo_password=None)
+                    assert config.connect_kwargs.password == "sikrit"
+                    assert config.sudo.password == "sikrit"
+
+            def ssh_config_path(self):
+                self.env.ssh_config_path = "/where/ever"
+                config = Config.from_v1(self.env, lazy=True)
+                assert config.ssh_config_path == "/where/ever"
+
+            def sudo_password(self):
+                config = self._conf(sudo_password="sikrit")
+                assert config.sudo.password == "sikrit"
+
+            def sudo_prompt(self):
+                config = self._conf(sudo_prompt="password???")
+                assert config.sudo.prompt == "password???"
+
+            def timeout(self):
+                config = self._conf(timeout=15)
+                assert config.timeouts.connect == 15
+
+            def use_ssh_config(self):
+                # Testing both due to v1-didn't-use-None-default issues
+                config = self._conf(use_ssh_config=True)
+                assert config.load_ssh_configs is True
+                config = self._conf(use_ssh_config=False)
+                assert config.load_ssh_configs is False
+
+            def warn_only(self):
+                # Testing both due to v1-didn't-use-None-default issues
+                config = self._conf(warn_only=True)
+                assert config.run.warn is True
+                config = self._conf(warn_only=False)
+                assert config.run.warn is False
 
 
 class ssh_config_loading:

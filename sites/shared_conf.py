@@ -34,10 +34,8 @@ html_sidebars = {
 
 # Enable & configure doctest
 extensions.append("sphinx.ext.doctest")
-# Import mock tooling from unit tests' _util.py
-doctest_path = [abspath(join(dirname(__file__), "..", "tests"))]
 doctest_global_setup = r"""
-from _util import MockRemote, MockSFTP, Session, Command
+from fabric.testing.base import MockRemote, MockSFTP, Session, Command
 """
 
 on_rtd = os.environ.get("READTHEDOCS") == "True"

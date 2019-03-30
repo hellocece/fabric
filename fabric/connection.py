@@ -11,7 +11,6 @@ except ImportError:
     from six import string_types
 import socket
 
-
 from invoke import Context
 from invoke.exceptions import ThreadException
 from paramiko.agent import AgentRequestHandler
@@ -20,6 +19,7 @@ from paramiko.config import SSHConfig
 from paramiko.proxy import ProxyCommand
 
 from .config import Config
+from .exceptions import InvalidV1Env
 from .transfer import Transfer
 from .tunnels import TunnelManager, Tunnel
 
@@ -28,6 +28,29 @@ from .tunnels import TunnelManager, Tunnel
 def opens(method, self, *args, **kwargs):
     self.open()
     return method(self, *args, **kwargs)
+
+
+def derive_shorthand(host_string):
+    user_hostport = host_string.rsplit("@", 1)
+    hostport = user_hostport.pop()
+    user = user_hostport[0] if user_hostport and user_hostport[0] else None
+
+    # IPv6: can't reliably tell where addr ends and port begins, so don't
+    # try (and don't bother adding special syntax either, user should avoid
+    # this situation by using port=).
+    if hostport.count(":") > 1:
+        host = hostport
+        port = None
+    # IPv4: can split on ':' reliably.
+    else:
+        host_port = hostport.rsplit(":", 1)
+        host = host_port.pop(0) or None
+        port = host_port[0] if host_port and host_port[0] else None
+
+    if port is not None:
+        port = int(port)
+
+    return {"user": user, "host": host, "port": port}
 
 
 class Connection(Context):
@@ -47,12 +70,16 @@ class Connection(Context):
     `.Connection` has a basic "`create <__init__>`, `connect/open <open>`, `do
     work <run>`, `disconnect/close <close>`" lifecycle:
 
-    * `Instantiation <__init__>` imprints the object with its connection
+    - `Instantiation <__init__>` imprints the object with its connection
       parameters (but does **not** actually initiate the network connection).
-    * Methods like `run`, `get` etc automatically trigger a call to
+
+        - An alternate constructor exists for users :ref:`upgrading piecemeal
+          from Fabric 1 <from-v1>`: `from_v1`
+
+    - Methods like `run`, `get` etc automatically trigger a call to
       `open` if the connection is not active; users may of course call `open`
       manually if desired.
-    * Connections do not always need to be explicitly closed; much of the
+    - Connections do not always need to be explicitly closed; much of the
       time, Paramiko's garbage collection hooks or Python's own shutdown
       sequence will take care of things. **However**, should you encounter edge
       cases (for example, sessions hanging on exit) it's helpful to explicitly
@@ -113,6 +140,64 @@ class Connection(Context):
     _sftp = None
     _agent_handler = None
 
+    @classmethod
+    def from_v1(cls, env, **kwargs):
+        """
+        Alternate constructor which uses Fabric 1's ``env`` dict for settings.
+
+        All keyword arguments besides ``env`` are passed unmolested into the
+        primary constructor.
+
+        .. warning::
+            Because your own config overrides will win over data from ``env``,
+            make sure you only set values you *intend* to change from your v1
+            environment!
+
+        For details on exactly which ``env`` vars are imported and what they
+        become in the new API, please see :ref:`v1-env-var-imports`.
+
+        :param env:
+            An explicit Fabric 1 ``env`` dict (technically, any
+            ``fabric.utils._AttributeDict`` instance should work) to pull
+            configuration from.
+
+        .. versionadded:: 2.4
+        """
+        # TODO: import fabric.state.env (need good way to test it first...)
+        # TODO: how to handle somebody accidentally calling this in a process
+        # where 'fabric' is fabric 2, and there's no fabric 1? Probably just a
+        # re-raise of ImportError??
+        # Our only requirement is a non-empty host_string
+        if not env.host_string:
+            raise InvalidV1Env(
+                "Supplied v1 env has an empty `host_string` value! Please make sure you're calling Connection.from_v1 within a connected Fabric 1 session."  # noqa
+            )
+        # TODO: detect collisions with kwargs & except instead of overwriting?
+        # (More Zen of Python compliant, but also, effort, and also, makes it
+        # harder for users to intentionally overwrite!)
+        connect_kwargs = kwargs.setdefault("connect_kwargs", {})
+        kwargs.setdefault("host", env.host_string)
+        shorthand = derive_shorthand(env.host_string)
+        # TODO: don't we need to do the below skipping for user too?
+        kwargs.setdefault("user", env.user)
+        # Skip port if host string seemed to have it; otherwise we hit our own
+        # ambiguity clause in __init__. v1 would also have been doing this
+        # anyways (host string wins over other settings).
+        if not shorthand["port"]:
+            # Run port through int(); v1 inexplicably has a string default...
+            kwargs.setdefault("port", int(env.port))
+        # key_filename defaults to None in v1, but in v2, we expect it to be
+        # either unset, or set to a list. Thus, we only pull it over if it is
+        # not None.
+        if env.key_filename is not None:
+            connect_kwargs.setdefault("key_filename", env.key_filename)
+        # Obtain config values, if not given, from its own from_v1
+        # NOTE: not using setdefault as we truly only want to call
+        # Config.from_v1 when necessary.
+        if "config" not in kwargs:
+            kwargs["config"] = Config.from_v1(env)
+        return cls(**kwargs)
+
     # TODO: should "reopening" an existing Connection object that has been
     # closed, be allowed? (See e.g. how v1 detects closed/semi-closed
     # connections & nukes them before creating a new client to the same host.)
@@ -130,6 +215,7 @@ class Connection(Context):
         forward_agent=None,
         connect_timeout=None,
         connect_kwargs=None,
+        inline_ssh_env=None,
     ):
         """
         Set up a new object representing a server connection.
@@ -218,6 +304,37 @@ class Connection(Context):
 
             Default: ``config.connect_kwargs``.
 
+        :param bool inline_ssh_env:
+            Whether to send environment variables "inline" as prefixes in front
+            of command strings (``export VARNAME=value && mycommand here``),
+            instead of trying to submit them through the SSH protocol itself
+            (which is the default behavior). This is necessary if the remote
+            server has a restricted ``AcceptEnv`` setting (which is the common
+            default).
+
+            The default value is the value of the ``inline_ssh_env``
+            :ref:`configuration value <default-values>` (which itself defaults
+            to ``False``).
+
+            .. warning::
+                This functionality does **not** currently perform any shell
+                escaping on your behalf! Be careful when using nontrivial
+                values, and note that you can put in your own quoting,
+                backslashing etc if desired.
+
+                Consider using a different approach (such as actual
+                remote shell scripts) if you run into too many issues here.
+
+            .. note::
+                When serializing into prefixed ``FOO=bar`` format, we apply the
+                builtin `sorted` function to the env dictionary's keys, to
+                remove what would otherwise be ambiguous/arbitrary ordering.
+
+            .. note::
+                This setting has no bearing on *local* shell commands; it only
+                affects remote commands, and thus, methods like `.run` and
+                `.sudo`.
+
         :raises ValueError:
             if user or port values are given via both ``host`` shorthand *and*
             their own arguments. (We `refuse the temptation to guess`_).
@@ -225,6 +342,9 @@ class Connection(Context):
         .. _refuse the temptation to guess:
             http://zen-of-python.info/
             in-the-face-of-ambiguity-refuse-the-temptation-to-guess.html#12
+
+        .. versionchanged:: 2.3
+            Added the ``inline_ssh_env`` parameter.
         """
         # NOTE: parent __init__ sets self._config; for now we simply overwrite
         # that below. If it's somehow problematic we would want to break parent
@@ -318,6 +438,12 @@ class Connection(Context):
         #: A convenience handle onto the return value of
         #: ``self.client.get_transport()``.
         self.transport = None
+
+        if inline_ssh_env is None:
+            inline_ssh_env = self.config.inline_ssh_env
+        #: Whether to construct remote command lines with env vars prefixed
+        #: inline.
+        self.inline_ssh_env = inline_ssh_env
 
     def resolve_connect_kwargs(self, connect_kwargs):
         # Grab connect_kwargs from config if not explicitly given.
@@ -423,26 +549,10 @@ class Connection(Context):
         return hash(self._identity())
 
     def derive_shorthand(self, host_string):
-        user_hostport = host_string.rsplit("@", 1)
-        hostport = user_hostport.pop()
-        user = user_hostport[0] if user_hostport and user_hostport[0] else None
-
-        # IPv6: can't reliably tell where addr ends and port begins, so don't
-        # try (and don't bother adding special syntax either, user should avoid
-        # this situation by using port=).
-        if hostport.count(":") > 1:
-            host = hostport
-            port = None
-        # IPv4: can split on ':' reliably.
-        else:
-            host_port = hostport.rsplit(":", 1)
-            host = host_port.pop(0) or None
-            port = host_port[0] if host_port and host_port[0] else None
-
-        if port is not None:
-            port = int(port)
-
-        return {"user": user, "host": host, "port": port}
+        # NOTE: used to be defined inline; preserving API call for both
+        # backwards compatibility and because it seems plausible we may want to
+        # modify behavior later, using eg config or other attributes.
+        return derive_shorthand(host_string)
 
     @property
     def is_connected(self):
@@ -571,6 +681,9 @@ class Connection(Context):
             self._agent_handler = AgentRequestHandler(channel)
         return channel
 
+    def _remote_runner(self):
+        return self.config.runners.remote(self, inline_env=self.inline_ssh_env)
+
     @opens
     def run(self, command, **kwargs):
         """
@@ -586,8 +699,7 @@ class Connection(Context):
 
         .. versionadded:: 2.0
         """
-        runner = self.config.runners.remote(self)
-        return self._run(runner, command, **kwargs)
+        return self._run(self._remote_runner(), command, **kwargs)
 
     @opens
     def sudo(self, command, **kwargs):
@@ -601,8 +713,7 @@ class Connection(Context):
 
         .. versionadded:: 2.0
         """
-        runner = self.config.runners.remote(self)
-        return self._sudo(runner, command, **kwargs)
+        return self._sudo(self._remote_runner(), command, **kwargs)
 
     def local(self, *args, **kwargs):
         """
